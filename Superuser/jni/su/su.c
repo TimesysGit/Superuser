@@ -237,16 +237,6 @@ static void read_options(struct su_context *ctx) {
     ctx->user.multiuser_mode = get_multiuser_mode();
 }
 
-static void user_init(struct su_context *ctx) {
-    if (ctx->from.uid > 99999) {
-        ctx->user.android_user_id = ctx->from.uid / 100000;
-        if (ctx->user.multiuser_mode == MULTIUSER_MODE_USER) {
-            snprintf(ctx->user.database_path, PATH_MAX, "%s/%d/%s", REQUESTOR_USER_PATH, ctx->user.android_user_id, REQUESTOR_DATABASE_PATH);
-            snprintf(ctx->user.base_path, PATH_MAX, "%s/%d/%s", REQUESTOR_USER_PATH, ctx->user.android_user_id, REQUESTOR);
-        }
-    }
-}
-
 static void populate_environment(const struct su_context *ctx) {
     struct passwd *pw;
 
@@ -726,7 +716,6 @@ int su_main(int argc, char *argv[], int need_client) {
         .user = {
             .android_user_id = 0,
             .multiuser_mode = MULTIUSER_MODE_OWNER_ONLY,
-            .database_path = REQUESTOR_DATA_PATH REQUESTOR_DATABASE_PATH,
             .base_path = REQUESTOR_DATA_PATH REQUESTOR
         },
     };
@@ -842,7 +831,6 @@ int su_main(int argc, char *argv[], int need_client) {
     }
 
     read_options(&ctx);
-    user_init(&ctx);
 
     // the latter two are necessary for stock ROMs like note 2 which do dumb things with su, or crash otherwise
     if (ctx.from.uid == AID_ROOT) {
@@ -850,36 +838,14 @@ int su_main(int argc, char *argv[], int need_client) {
         allow(&ctx);
     }
 
-    // verify superuser is installed
-    if (stat(ctx.user.base_path, &st) < 0) {
-        // send to market (disabled, because people are and think this is hijacking their su)
-        // if (0 == strcmp(JAVA_PACKAGE_NAME, REQUESTOR))
-        //     silent_run("am start -d http://www.clockworkmod.com/superuser/install.html -a android.intent.action.VIEW");
-        PLOGE("stat %s", ctx.user.base_path);
-        deny(&ctx);
-    }
-
-    // odd perms on superuser data dir
-    if (st.st_gid != st.st_uid) {
-        LOGE("Bad uid/gid %d/%d for Superuser Requestor application",
-                (int)st.st_uid, (int)st.st_gid);
-        deny(&ctx);
-    }
-
-    // always allow if this is the superuser uid
-    // superuser needs to be able to reenable itself when disabled...
-    if (ctx.from.uid == st.st_uid) {
+    // autogrant shell at this point
+    if (ctx.from.uid == AID_SHELL) {
+        LOGD("Allowing shell.");
         allow(&ctx);
     }
 
-    // check if superuser is disabled completely
-    if (access_disabled(&ctx.from)) {
-        LOGD("access_disabled");
-        deny(&ctx);
-    }
-
-    // autogrant shell at this point
-    if (ctx.from.uid == AID_SHELL) {
+    // autogrant system apps
+    if (ctx.from.uid == AID_SYSTEM) {
         LOGD("Allowing shell.");
         allow(&ctx);
     }
@@ -908,19 +874,6 @@ int su_main(int argc, char *argv[], int need_client) {
     if (seteuid(st.st_uid)) {
         PLOGE("seteuid (%lu)", st.st_uid);
         deny(&ctx);
-    }
-
-    dballow = database_check(&ctx);
-    switch (dballow) {
-        case INTERACTIVE:
-            break;
-        case ALLOW:
-            LOGD("db allowed");
-            allow(&ctx);    /* never returns */
-        case DENY:
-        default:
-            LOGD("db denied");
-            deny(&ctx);        /* never returns too */
     }
 
     socket_serv_fd = socket_create_temp(ctx.sock_path, sizeof(ctx.sock_path));
